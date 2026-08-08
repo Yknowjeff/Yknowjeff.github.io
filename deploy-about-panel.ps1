@@ -1,3 +1,315 @@
+<# ============================================================
+   deploy-about-panel.ps1
+   Writes PanelShell.vue, AboutPanel.vue, and about.js into the
+   Yknowjeff.github.io project, using no-BOM UTF8 writes
+   (PowerShell 5.1-safe -- avoids the Set-Content BOM collision
+   that breaks Rollup with "Unexpected character '»'").
+
+   USAGE:
+     1. Edit $ProjectRoot below if your repo lives elsewhere.
+     2. Save this file as deploy-about-panel.ps1
+     3. Run:
+          Unblock-File .\deploy-about-panel.ps1
+          powershell -ExecutionPolicy Bypass -File .\deploy-about-panel.ps1
+   ============================================================ #>
+
+$ErrorActionPreference = "Stop"
+
+# ---- CONFIG: adjust if your local clone path differs ----
+$ProjectRoot = "$PSScriptRoot"
+# If this script is NOT sitting inside the repo root, set the absolute path instead, e.g.:
+# $ProjectRoot = "C:\Users\Jeff\Projects\Yknowjeff.github.io"
+
+$PanelsDir = Join-Path $ProjectRoot "sources\UI\components\panels"
+$DataDir   = Join-Path $ProjectRoot "sources\UI\data"
+
+# ---- Sanity checks before writing anything ----
+if (-not (Test-Path $ProjectRoot)) {
+    throw "ProjectRoot not found: $ProjectRoot -- update `$ProjectRoot at the top of this script."
+}
+
+New-Item -ItemType Directory -Force -Path $PanelsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $DataDir   | Out-Null
+
+Write-Host "Target panels dir: $PanelsDir"
+Write-Host "Target data dir:   $DataDir"
+Write-Host ""
+
+# ---- No-BOM UTF8 writer (PS 5.1 compatible) ----
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+    Write-Host "  Wrote: $Path"
+}
+
+# ---- Pre-write backups of anything that already exists ----
+$targets = @(
+    (Join-Path $PanelsDir "PanelShell.vue"),
+    (Join-Path $PanelsDir "AboutPanel.vue"),
+    (Join-Path $DataDir   "about.js")
+)
+
+Write-Host "Backing up existing files (if any)..."
+foreach ($t in $targets) {
+    if (Test-Path $t) {
+        $backup = "$t.bak"
+        Copy-Item -Path $t -Destination $backup -Force
+        Write-Host "  Backed up: $t -> $backup"
+    }
+}
+Write-Host ""
+
+# ---- PanelShell.vue ----
+$panelShellContent = @'
+<script setup>
+import gsap from 'gsap'
+
+const props = defineProps({
+    title: { type: String, required: true },
+    subtitle: { type: String, default: '' },
+    // 'card' (default) is a centered card over a translucent backdrop that
+    // still shows the 3D scene behind it -- used for Work/Resume. 'fullscreen'
+    // is a wider (max 980px) glass HUD card over a fully transparent backdrop
+    // with its own scrollable body -- used for About. Per the Figma source of
+    // truth, the 3D world must stay visible behind it at all times, so this
+    // variant never paints an opaque background at any layer.
+    variant: { type: String, default: 'card' }
+})
+
+const emit = defineEmits([ 'close' ])
+
+function onBackdropEnter(el, done)
+{
+    gsap.fromTo(el, { opacity: 0 }, { opacity: 1, duration: 0.35, ease: 'power2.out', onComplete: done })
+}
+
+function onBackdropLeave(el, done)
+{
+    gsap.to(el, { opacity: 0, duration: 0.25, ease: 'power1.in', onComplete: done })
+}
+
+function onPanelEnter(el, done)
+{
+    const fromVars = props.variant === 'fullscreen'
+        ? { opacity: 0 }
+        : { opacity: 0, y: 24, scale: 0.98 }
+
+    gsap.fromTo(
+        el,
+        fromVars,
+        { opacity: 1, y: 0, scale: 1, duration: 0.45, delay: 0.05, ease: 'power3.out', onComplete: done }
+    )
+}
+
+function onPanelLeave(el, done)
+{
+    const toVars = props.variant === 'fullscreen'
+        ? { opacity: 0, duration: 0.25, ease: 'power1.in' }
+        : { opacity: 0, y: 16, scale: 0.98, duration: 0.25, ease: 'power1.in' }
+
+    gsap.to(el, { ...toVars, onComplete: done })
+}
+</script>
+
+<template>
+    <Transition :css="false" @enter="onBackdropEnter" @leave="onBackdropLeave">
+        <div
+            class="iw-panel-backdrop"
+            :class="{ 'iw-panel-backdrop--fullscreen': variant === 'fullscreen' }"
+            @click.self="emit('close')"
+        >
+            <Transition :css="false" @enter="onPanelEnter" @leave="onPanelLeave" appear>
+                <section
+                    class="iw-panel"
+                    :class="{ 'iw-panel--fullscreen': variant === 'fullscreen' }"
+                    role="dialog"
+                    aria-modal="true"
+                    :aria-label="title"
+                >
+                    <header class="iw-panel__header">
+                        <div>
+                            <h2 class="iw-panel__title">{{ title }}</h2>
+                            <p v-if="subtitle" class="iw-panel__subtitle">{{ subtitle }}</p>
+                        </div>
+                        <div class="iw-panel__header-right">
+                            <!-- Optional per-panel extra (e.g. About's "AVAILABLE" status dot).
+                                 Empty by default, so Work/Resume render exactly as before. -->
+                            <slot name="header-meta" />
+                            <button class="iw-panel__close" type="button" @click="emit('close')" aria-label="Close">
+                                <span>Close</span>
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                    <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                                </svg>
+                            </button>
+                        </div>
+                    </header>
+                    <div class="iw-panel__body iw-scrollable">
+                        <slot />
+                    </div>
+                </section>
+            </Transition>
+        </div>
+    </Transition>
+</template>
+
+<style scoped>
+.iw-panel-backdrop
+{
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5vh 5vw;
+    background: radial-gradient(circle at 50% 20%, rgba(20, 28, 26, 0.55), var(--iw-ink-soft) 70%);
+    pointer-events: auto;
+    z-index: 30;
+}
+
+.iw-panel-backdrop--fullscreen
+{
+    /* Figma source of truth: "the 3D game world MUST remain visible behind
+       the About Me interface at all times" -- no opaque page background,
+       just enough padding to let the HUD card float above the scene. */
+    padding: 14px;
+    background: transparent;
+}
+
+.iw-panel
+{
+    width: min(920px, 100%);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--iw-panel);
+    border: 1px solid var(--iw-border);
+    border-radius: var(--iw-radius-lg);
+    box-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.7);
+    overflow: hidden;
+}
+
+.iw-panel--fullscreen
+{
+    width: 100%;
+    max-width: 980px;
+    height: 100%;
+    max-height: 100%;
+    margin: 0 auto;
+    border: 1px solid var(--iw-border);
+    border-radius: var(--iw-radius-lg);
+    box-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.65);
+    background: rgba(6, 9, 16, 0.55);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+
+.iw-panel__header
+{
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 28px 32px 20px;
+    border-bottom: 1px solid var(--iw-border);
+}
+
+.iw-panel--fullscreen .iw-panel__header
+{
+    padding: 18px 28px;
+    position: sticky;
+    top: 0;
+    background: rgba(4, 6, 12, 0.5);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 1;
+}
+
+.iw-panel--fullscreen .iw-panel__title
+{
+    font-family: 'JetBrains Mono', var(--iw-font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+}
+
+.iw-panel--fullscreen .iw-panel__subtitle
+{
+    font-family: 'JetBrains Mono', var(--iw-font-mono);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--iw-accent);
+    opacity: 0.75;
+    margin-top: 2px;
+}
+
+.iw-panel__title
+{
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.iw-panel__subtitle
+{
+    margin: 6px 0 0;
+    font-size: 13px;
+    color: var(--iw-text-dim);
+}
+
+.iw-panel__header-right
+{
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.iw-panel__close
+{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: transparent;
+    border: 1px solid var(--iw-border);
+    border-radius: var(--iw-radius-sm);
+    color: var(--iw-text-dim);
+    font-size: 11px;
+    font-family: var(--iw-font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    transition: color 0.2s var(--iw-ease), border-color 0.2s var(--iw-ease);
+}
+
+.iw-panel__close:hover
+{
+    color: var(--iw-text);
+    border-color: var(--iw-border-strong);
+}
+
+.iw-panel__body
+{
+    padding: 28px 32px 32px;
+    overflow-y: auto;
+}
+
+.iw-panel--fullscreen .iw-panel__body
+{
+    padding: 32px clamp(20px, 4vw, 40px) 60px;
+}
+</style>
+
+'@
+
+Write-Utf8NoBom -Path (Join-Path $PanelsDir "PanelShell.vue") -Content $panelShellContent
+
+# ---- AboutPanel.vue ----
+$aboutPanelContent = @'
 <script setup>
 import PanelShell from './PanelShell.vue'
 import { usePanelEscape } from '../../composables/usePanelEscape.js'
@@ -21,7 +333,7 @@ usePanelEscape(close)
         </template>
 
         <div class="iw-about">
-            <!-- â”€â”€ ABOUT â”€â”€ -->
+            <!-- ── ABOUT ── -->
             <section class="iw-about__hero">
                 <div>
                     <p class="iw-about__eyebrow">{{ about.hero.greeting }}</p>
@@ -59,7 +371,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ SKILLS â”€â”€ -->
+            <!-- ── SKILLS ── -->
             <section>
                 <p class="iw-about__slug">// skills</p>
                 <h3 class="iw-about__heading">What I Work With</h3>
@@ -75,7 +387,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ PROJECTS â”€â”€ -->
+            <!-- ── PROJECTS ── -->
             <section>
                 <p class="iw-about__slug">// projects</p>
                 <h3 class="iw-about__heading">Things I've Built</h3>
@@ -88,7 +400,7 @@ usePanelEscape(close)
                         <div class="iw-about__project-body">
                             <div class="iw-about__project-head">
                                 <span class="iw-about__project-title">{{ project.title }}</span>
-                                <span class="iw-about__project-view">View â†’</span>
+                                <span class="iw-about__project-view">View →</span>
                             </div>
                             <p class="iw-about__project-desc">{{ project.desc }}</p>
                             <div class="iw-about__tag-row">
@@ -101,18 +413,18 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ ACTIVITIES â”€â”€ -->
+            <!-- ── ACTIVITIES ── -->
             <section>
                 <p class="iw-about__slug">// activities</p>
                 <h3 class="iw-about__heading">Hands-on Practice</h3>
                 <article v-for="activity in about.activities" :key="activity.title" class="iw-about__activity">
                     <div class="iw-about__activity-head">
                         <div>
-                            <p class="iw-about__activity-meta">{{ activity.num }} Â· {{ activity.year }}</p>
+                            <p class="iw-about__activity-meta">{{ activity.num }} · {{ activity.year }}</p>
                             <p class="iw-about__activity-title">{{ activity.title }}</p>
                             <p class="iw-about__activity-role">{{ activity.role }}</p>
                         </div>
-                        <span class="iw-about__activity-details">Details â†’</span>
+                        <span class="iw-about__activity-details">Details →</span>
                     </div>
                     <p class="iw-about__activity-desc">{{ activity.desc }}</p>
                 </article>
@@ -120,7 +432,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ EXPERIENCE â”€â”€ -->
+            <!-- ── EXPERIENCE ── -->
             <section>
                 <p class="iw-about__slug">// experience</p>
                 <h3 class="iw-about__heading">Where I've Been</h3>
@@ -134,7 +446,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ ACHIEVEMENTS â”€â”€ -->
+            <!-- ── ACHIEVEMENTS ── -->
             <section>
                 <p class="iw-about__slug">// achievements</p>
                 <h3 class="iw-about__heading">Milestones</h3>
@@ -146,7 +458,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ EDUCATION â”€â”€ -->
+            <!-- ── EDUCATION ── -->
             <section>
                 <p class="iw-about__slug">// education</p>
                 <h3 class="iw-about__heading">Academic Background</h3>
@@ -159,7 +471,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ RESUME â”€â”€ -->
+            <!-- ── RESUME ── -->
             <section>
                 <p class="iw-about__slug">// resume</p>
                 <h3 class="iw-about__heading">{{ about.resumeCta.heading }}</h3>
@@ -171,7 +483,7 @@ usePanelEscape(close)
 
             <hr class="iw-about__divider">
 
-            <!-- â”€â”€ CONTACT â”€â”€ -->
+            <!-- ── CONTACT ── -->
             <section class="iw-about__contact-section">
                 <p class="iw-about__slug">// contact</p>
                 <h3 class="iw-about__heading">{{ about.contact.heading }}</h3>
@@ -874,3 +1186,156 @@ usePanelEscape(close)
     }
 }
 </style>
+
+'@
+
+Write-Utf8NoBom -Path (Join-Path $PanelsDir "AboutPanel.vue") -Content $aboutPanelContent
+
+# ---- about.js ----
+$aboutJsContent = @'
+// Content for the About panel (sources/UI/components/panels/AboutPanel.vue)
+// and, for name/role only, the Resume panel. Source of truth for layout is
+// the Figma "Build Now" About Me HUD design -- see AboutPanel.vue.
+
+export default {
+    name: 'Jefferson F. Laspiñas',
+    role: 'Creative Developer',
+    status: 'Available',
+
+    hero: {
+        greeting: 'Hello!',
+        bio: [
+            'I\'m a Computer Science student and creative developer interested in building interactive websites, applications, and digital experiences.',
+            'I enjoy combining programming, design, and interactive technologies to create projects that are both functional and engaging.'
+        ],
+        avatarCaption: 'CS Student'
+    },
+
+    quickInfo: [
+        { label: 'Location', value: 'Philippines' },
+        { label: 'Education', value: 'Bachelor of Science in Computer Science' },
+        { label: 'Focus', tags: [ 'Web Development', 'Interactive Experiences', 'UI/UX', 'Creative Technology' ] }
+    ],
+
+    skills: [
+        { group: 'development', items: [ 'JavaScript', 'HTML', 'CSS', 'Java', 'Vue.js' ] },
+        { group: '3d / interactive', items: [ 'Three.js', 'WebGL', 'WebGPU', 'GSAP' ] },
+        { group: 'tools', items: [ 'Git', 'GitHub', 'VS Code', 'Figma' ] }
+    ],
+
+    // Independent from sources/UI/data/projects.js (which drives the Work
+    // billboard) -- About tells the same story in its own scrollable list,
+    // per the Figma design. Swap `image` for local screenshots when ready;
+    // these are placeholder Unsplash photos carried over from the design file.
+    projects: [
+        {
+            num: 'Project 01',
+            title: '3D Interactive Portfolio',
+            desc: 'An immersive 3D portfolio experience designed around exploration and interaction.',
+            tags: [ 'Three.js', 'WebGL', 'JavaScript' ],
+            image: 'https://images.unsplash.com/photo-1760008486593-a85315610136?w=600&h=360&fit=crop&auto=format',
+            imageAlt: '3D abstract shapes representing an interactive portfolio'
+        },
+        {
+            num: 'Project 02',
+            title: 'Event Registration System',
+            desc: 'Desktop application for managing walk-in registration and attendee check-ins.',
+            tags: [ 'Java', 'Swing', 'JSON' ],
+            image: 'https://images.unsplash.com/photo-1526628953301-3e589a6a8b74?w=600&h=360&fit=crop&auto=format',
+            imageAlt: 'Dashboard monitoring screen for event management'
+        },
+        {
+            num: 'Project 03',
+            title: 'Canteen Ordering System',
+            desc: 'Desktop ordering application designed to simplify canteen transactions.',
+            tags: [ 'Java', 'GUI' ],
+            image: 'https://images.unsplash.com/photo-1760888549280-4aef010720bd?w=600&h=360&fit=crop&auto=format',
+            imageAlt: 'Food ordering app on a smartphone'
+        }
+    ],
+
+    activities: [
+        {
+            num: '01',
+            title: 'University Event',
+            role: 'Organizer / Contributor',
+            year: '2026',
+            desc: 'Participated in planning and coordinating university activities while working with different teams.'
+        },
+        {
+            num: '02',
+            title: 'Programming Activity',
+            role: 'Participant / Developer',
+            year: '2026',
+            desc: 'Participated in programming activities involving problem solving, development, and collaboration.'
+        },
+        {
+            num: '03',
+            title: 'Community Activity',
+            role: 'Participant',
+            year: '2026',
+            desc: 'Participated in collaborative school and community-oriented activities.'
+        }
+    ],
+
+    experience: [
+        {
+            period: '2026 — Present',
+            title: 'Computer Science Student',
+            place: 'University of the Immaculate Conception',
+            desc: 'Developing software projects and studying programming, algorithms, data structures, web development, and software engineering.'
+        }
+    ],
+
+    // Placeholders, per the Figma spec ("use placeholders where actual
+    // information is unavailable, do not invent achievements").
+    achievements: [
+        { year: '2026', label: 'Programming / Academic Achievement' },
+        { year: '2026', label: 'Project Recognition' },
+        { year: '2026', label: 'Competition / Event' },
+        { year: '2026', label: 'Certification' }
+    ],
+
+    education: {
+        school: 'University of the Immaculate Conception',
+        degree: 'Bachelor of Science in Computer Science',
+        period: '2025 — Present'
+    },
+
+    resumeCta: {
+        heading: 'Want the complete picture?',
+        text: 'Download my resume for a concise overview of my education, skills, projects, activities, achievements, and experience.',
+        buttonLabel: 'Download Resume',
+        path: '/resume.pdf'
+    },
+
+    contact: {
+        heading: 'Let\'s Build Something.',
+        subheading: 'Have an idea? Let\'s talk.',
+        email: 'your-email@example.com',
+        github: 'https://github.com/yourusername',
+        linkedin: 'https://linkedin.com/in/yourusername'
+    }
+}
+
+'@
+
+Write-Utf8NoBom -Path (Join-Path $DataDir "about.js") -Content $aboutJsContent
+
+Write-Host ""
+Write-Host "Done. Verifying no BOM on written files..."
+
+foreach ($t in $targets) {
+    $bytes = [System.IO.File]::ReadAllBytes($t)
+    $hasBom = ($bytes.Length -ge 3) -and ($bytes[0] -eq 0xEF) -and ($bytes[1] -eq 0xBB) -and ($bytes[2] -eq 0xBF)
+    if ($hasBom) {
+        Write-Host "  WARNING: BOM detected in $t" -ForegroundColor Red
+    } else {
+        Write-Host "  OK (no BOM): $t" -ForegroundColor Green
+    }
+}
+
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "  git status"
+Write-Host "  npm run build   # sanity-check the Rollup/Vite build before committing"
