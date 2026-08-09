@@ -168,7 +168,20 @@ export default class Billboard
         housing.frustumCulled = true
         this.group.add(housing)
 
+        const edge = new THREE.LineSegments(
+            new THREE.EdgesGeometry(new THREE.BoxGeometry(width, height, 1.12)),
+            new THREE.LineBasicMaterial({ color: BILLBOARD.color, transparent: true, opacity: 0.72 })
+        )
+        edge.position.copy(housing.position)
+        this.group.add(edge)
 
+        const beaconGeometry = new THREE.SphereGeometry(0.32, 12, 8)
+        for(const x of [ -width * 0.46, width * 0.46 ])
+        {
+            const beacon = new THREE.Mesh(beaconGeometry, new THREE.MeshBasicMaterial({ color: 0xff174f }))
+            beacon.position.set(x, height + 3.1, 0.7)
+            this.group.add(beacon)
+        }
     }
 
     buildScreen()
@@ -269,6 +282,13 @@ export default class Billboard
         bottomScrim.addColorStop(1, 'rgba(2, 4, 8, 0.92)')
         ctx.fillStyle = bottomScrim
         ctx.fillRect(0, height * 0.5, width, height * 0.5)
+
+        ctx.strokeStyle = '#35f6ff'
+        ctx.lineWidth = 7
+        ctx.strokeRect(30, 30, width - 60, height - 60)
+        ctx.strokeStyle = '#ff174f'
+        ctx.lineWidth = 3
+        ctx.strokeRect(48, 48, width - 96, height - 96)
 
         ctx.fillStyle = '#8ffbff'
         ctx.font = '700 26px monospace'
